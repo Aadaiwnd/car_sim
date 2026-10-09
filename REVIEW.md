@@ -1,29 +1,19 @@
 # REVIEW.md —— 四轮小车控制模拟
 
-> 提交前请通读全文，把内容改成自己的语气重新组织一遍再录入提交。
-
 ## 问题 1：程序由哪些主要部分组成，各部分负责什么？main 中主要完成了什么工作？
 
-我的程序分为两个层次、三个文件：
+我把程序拆成了三个文件，分成两层：
 
-| 文件 | 层次 | 负责的内容 |
-|------|------|-----------|
-| `car.h` | 接口声明 | 定义 `Car`、`MotionRequest` 等数据结构，以及小车模型对外的全部函数接口 |
-| `car.c` | 核心逻辑层 | 维护小车的状态机（IDLE / RUNNING / EMERGENCY）、自动与手动两份控制要求、四轮实际速度；实现 `start`、`step`、`emergency`、`reset` 等行为 |
-| `main.c` | 解析交互层 | 从标准输入逐行读命令、分词、校验参数合法性，然后调用 `car.h` 的接口完成实际动作，并打印提示信息 |
+- `car.h` + `car.c` 是核心模型层。`car.h` 里定义了 `Car`、`MotionRequest` 这几个结构体和对外函数的声明；`car.c` 保存小车的状态机（待机 / 运行 / 急停）、自动和手动两份控制要求、四个轮子的实际速度，`start`、`step`、`emergency`、`reset` 这些行为都在这里实现。
+- `main.c` 是命令交互层，只负责读输入、拆单词、检查参数合不合法，然后调用 `car.h` 声明的接口去做事，最后打印结果。
 
-之所以这样拆，是想让"车怎么动"和"命令怎么读"彻底分开：`car.c` 完全不做输入输出（除了被动的数据查询），`main.c` 完全不懂速度变化规则。这样以后如果想把命令来源从标准输入换成串口或网络，只需要改 `main.c`；反过来，改运动规则只动 `car.c`。
+这样拆的原因是让"车怎么动"和"命令怎么读"互不干扰：`car.c` 里没有任何输入输出，`main.c` 里也不写速度变化规则。以后就算把输入源换成串口或者网络，只需要改 `main.c`。
 
-`main.c` 的 `main()` 中主要做了四件事：
-
-1. 调用 `car_init()` 把小车初始化为待机状态；
-2. 进入 `while (fgets(...))` 主循环，把每一行按空白切成单词数组（`split_line()`）；
-3. 根据第一个单词分发到对应的处理分支：`start` / `auto` / `manual` / `step` / `emergency` / `reset` / `status` / `quit` 等，其中 `auto` 和 `manual` 的参数格式相同，共用 `handle_motion_command()` 一个解析函数；
-4. 每个分支先做参数校验（缺参数、速度不是 0~100 的整数、多余参数、未知运动方式），校验通过再检查系统状态，最后才调用 `car.c` 的接口。`status` 分支调用 `print_status()` 按题目规定的 6 行格式输出。
+`main()` 里做的事情按顺序是：先调 `car_init()` 把小车初始化成待机；然后进入 `while (fgets(...))` 主循环，每读一行就用 `split_line()` 按空白切成单词；接着看第一个单词是什么命令，分发给对应的处理分支，一共有 `start` / `auto` / `manual` / `step` / `emergency` / `reset` / `status` / `quit` 这几个，其中 `auto` 和 `manual` 参数格式一样，我让它们共用 `handle_motion_command()` 一个函数；每个分支都是先检查参数（缺不缺参数、速度是不是 0~100 的整数、有没有多余参数、运动方式认不认识），通过了再检查小车的状态，最后才真正调 `car.c` 的接口。`status` 分支调 `print_status()`，按题目要求的 6 行格式输出。
 
 ## 问题 2：手动控制优先是如何保证的？`manual release` 后又是如何恢复自动要求的？
 
-**优先级的保证集中在 `car.c` 的 `car_effective()` 一个函数里**，这是整个程序最关键的设计：
+优先级判断我只写了一个函数 `car_effective()`，所有需要知道"小车现在到底该执行哪个要求"的地方都调它：
 
 ```c
 const MotionRequest *car_effective(const Car *car)
@@ -32,42 +22,34 @@ const MotionRequest *car_effective(const Car *car)
         return &car->manual_req;         /* 手动优先 */
     if (car->auto_req.valid)
         return &car->auto_req;
-    return &g_stop_request;              /* 无任何要求时为 STOP */
+    return &g_stop_request;              /* 什么都没有就停车 */
 }
 ```
 
-自动和手动的要求分别保存在 `Car` 结构体的 `auto_req` 和 `manual_req` 两个 `MotionRequest` 成员里，互不覆盖：
+`Car` 结构体里有两个 `MotionRequest` 成员，`auto_req` 和 `manual_req`，分别存自动和手动的控制要求，互相不覆盖。比如先 `auto forward 60`，再 `manual left 30`，后者只会写 `manual_req`，`auto_req` 里存的 `FORWARD 60` 一直原样保留着。
 
-- 执行 `manual left 30` 时，只写 `manual_req`，`auto_req` 里原来保存的（比如 `FORWARD 60`）原封不动；
-- 所有需要知道"现在真正该做什么"的地方——`car_step()` 计算目标速度、`car_target_wheels()`、以及 `status` 输出里的 `CONTROL` / `TARGET` 行——全部通过 `car_effective()` 取结果。
+`car_step()` 算目标速度、`status` 输出里的 `CONTROL` 和 `TARGET` 行，全部都是从 `car_effective()` 拿的结果。这样做的好处是优先级规则只有这一份，不存在第二个地方再判断一遍，自然不会出现两边判断打架的情况。`manual stop` 的情况也一样：它只是把 `manual_req` 设成 valid 且模式为 STOP，所以 `CONTROL` 仍然显示 MANUAL、`TARGET` 显示 STOP，符合题目要求。
 
-这样优先级规则只存在于这一处，不存在第二份判断逻辑，也就不会出现两处判断不一致的 bug。比如 `manual stop` 也只是把 `manual_req` 设为 `{valid=1, mode=STOP}`，因为 `valid` 仍然是 1，所以手动仍然"生效"，`CONTROL` 输出 `MANUAL`、`TARGET` 输出 `STOP`，与题目要求一致。
-
-**`manual release` 的恢复是"自动发生"的**：`car_release_manual()` 只做一件事——把 `manual_req.valid` 清零：
+`manual release` 的恢复其实是"不用恢复"。`car_release_manual()` 只干一件事，把 `manual_req.valid` 清零：
 
 ```c
 int car_release_manual(Car *car)
 {
     if (!car->manual_req.valid)
         return -1;
-    car->manual_req.valid = 0;    /* 只清手动，自动要求从未被破坏 */
+    car->manual_req.valid = 0;
     return 0;
 }
 ```
 
-由于 `auto_req` 在手动生效期间一直被完整保存（期间执行 `auto backward 80` 也只是更新 `auto_req`），`valid` 清零后，下一次任何地方调用 `car_effective()`，`manual_req.valid` 已经是 0，条件自然落到 `auto_req` 分支，返回最近保存的自动要求——不需要"恢复"这个动作，因为自动要求从未丢失。
+因为 `auto_req` 在整个手动期间从来没有被破坏过（手动期间执行 `auto backward 80` 也只是更新 `auto_req`），所以 valid 一清零，下一次 `car_effective()` 的第一个条件不成立，自然就落到 `auto_req` 那个分支，返回最近一次保存的自动要求。不是"恢复"出来的，是一直就在那里。
 
 ## 问题 3：普通运动命令、step 和 emergency 对四轮实际速度的影响有什么区别？分别在哪里处理？
 
-三者的本质区别是：**运动命令只改"目标"，step 让"实际"追"目标"，emergency 直接把"实际"清零**。
+我的理解是三者的区别一句话就能说清：**运动命令只改"目标"，step 让"实际"去追"目标"，emergency 直接把"实际"清零**。
 
-| 操作 | 对目标速度 | 对实际速度 | 处理位置 |
-|------|-----------|-----------|---------|
-| `auto/manual ...` | 更新生效要求对应的四轮目标速度 | **完全不碰**实际速度 | `main.c` 的 `handle_motion_command()` 校验参数后调用 `car_set_auto()` / `car_set_manual()`，只写 `req` 成员 |
-| `step` | 不改目标 | 每轮实际速度向各自目标最多变化 20，正确经过 0 | `car.c` 的 `car_step()`：先 `car_target_wheels()` 算出目标，再逐轮做 ±20 的逼近夹取 |
-| `emergency` | 不改已保存的控制要求 | 四轮实际速度**立即**变 0，不经过 step | `car.c` 的 `car_emergency()`：直接把 `wheel[4]` 全部置 0 |
-
-`car_step()` 里的逼近逻辑：
+- `auto/manual ...` 命令：在 `main.c` 的 `handle_motion_command()` 里校验完参数后调 `car_set_auto()` / `car_set_manual()`，只更新控制要求和对应的目标速度，完全不碰实际速度。
+- `step`：在 `car.c` 的 `car_step()` 里处理。先用 `car_target_wheels()` 算出四轮目标，再让每个轮子的实际速度朝各自的目标最多变化 20：
 
 ```c
 if (car->wheel[i] < target[i]) {
@@ -81,27 +63,23 @@ if (car->wheel[i] < target[i]) {
 }
 ```
 
-因为是加/减 20 后再与目标夹取，从 40 变到 -40 时会依次得到 20、0、-20、-40，自然经过 0，不会跳变。`CAR_STEP_MAX` 定义为宏，步长调整只改一处。
+先加减 20 再和目标夹一下，所以从 40 变到 -40 会依次经过 20、0、-20、-40，不会跳变。步长 `CAR_STEP_MAX` 是宏，以后想改只动一处。
 
-另外我做了两个自己的设计决定（题目没有明确规定）：`step` 在待机和急停状态下会拒绝执行（防止急停后 step 又把速度拉起来）；`emergency` 只清实际速度、不清控制要求，所以急停后 `status` 仍能看到保存的 `AUTO`/`MANUAL` 要求，`WHEELS` 为 0。只有 `reset` 才会清空全部控制要求。
+- `emergency`：在 `car.c` 的 `car_emergency()` 里，直接把四个轮子的实际速度全部置 0，一步到位，不经过 step 的渐进过程，也不清除已保存的控制要求。
+
+另外有两个题目没明确规定、我自己拿主意的地方：一是 `step` 在待机和急停状态下会拒绝执行，防止急停之后 step 又把速度拉起来；二是 `emergency` 之后 `status` 仍能看到保存的 AUTO/MANUAL 要求，`WHEELS` 是 0，只有 `reset` 才会清空全部控制要求。
 
 ## 问题 4：如果增加一种新的运动方式，需要修改哪些位置？
 
-假设新增"原地顺时针旋转 `spin`"（左轮反转、右轮正转）：
+拿"原地顺时针旋转 spin"举例（左轮反转、右轮正转），必须改的只有两处：
 
-**必须修改的只有两处：**
-
-1. `car.h` 的 `MotionMode` 枚举加一项 `MOTION_SPIN`（放在 `MOTION_COUNT` 之前）；
+1. `car.h` 的 `MotionMode` 枚举里加一项 `MOTION_SPIN`（放在 `MOTION_COUNT` 之前）；
 2. `car.c` 的运动方式表 `g_motion_table` 加一行 `{ "SPIN", { -1, +1, -1, +1 } }`。
 
-之后 `motion_find()` 能自动识别 `spin` 输入，`status` 能自动输出 `SPIN`，四轮目标速度按表中的系数乘以速度自动算出——因为命令解析（`main.c`）、目标速度计算（`car_target_wheels()`）、状态输出（`print_status()`）全都是**查表驱动**的，没有任何一个 `if` 写死了"forward 怎么办、left 怎么办"。
+改完这两处，`motion_find()` 就能识别 `spin` 输入，`status` 能输出 `SPIN`，四轮目标速度按表里的系数乘速度自动算出来。因为命令解析（`main.c`）、目标速度计算（`car_target_wheels()`）、状态输出（`print_status()`）全是查表驱动的，没有哪处写死了"forward 怎么办、left 怎么办"，所以加数据就是加功能。
 
-**比较方便扩展的地方**：凡是"每个运动方式各自一行数据"的结构——运动方式表、枚举、`format_request()` 这类遍历代码，新增方式都是加数据不改逻辑。
+方便扩展的地方：凡是"每种运动方式占一行数据"的结构，包括运动方式表、枚举、`format_request()` 这类遍历代码，都是加数据不改逻辑。
 
-**比较麻烦的地方**：目前的模型假设"四轮目标速度 = 方向系数 ±1 × 统一速度参数"。如果新运动方式不符合这个模型——比如四轮速度大小各不相同（"斜向漂移"让某个轮子只转 70%），或者需要额外参数（"spin 45 度"）——光加表项就不够了，得把 `MotionDef` 从系数数组升级成"每轮独立的比例数组"甚至函数指针，`format_request()` 的输出格式也要跟着变。这是这个设计最大的局限。
+麻烦的地方：现在的模型默认"四轮目标速度 = ±1 的方向系数 × 统一速度"。如果新方式不符合这个假设，比如某个轮子只想转到 70% 的速度，或者需要额外参数（像"spin 45 度"这种），光加表项就不够了，得把 `MotionDef` 从系数数组升级成每轮独立的比例数组甚至函数指针，输出格式也得跟着改。这是这个设计最大的局限。
 
-**如果继续完善，我会优先改进**：
-
-1. **自动化回归测试**——把 `tests/` 下的几个测试脚本整理成"输入文件 + 期望输出文件"的对比测试，每次改动后一键跑完，防止改扩展时破坏原有行为；
-2. 把 `main.c` 里的分发逻辑从一长串 `else if` 改成"命令表 + 处理函数指针"的结构，使命令本身也可以像运动方式一样查表扩展；
-3. `emergency` 状态下 `CONTROL`/`TARGET` 的语义（保留还是显示 STOP）是我自己的解释，题目没有明确规定，我会先和出题方确认后再固化。
+如果继续完善，我最想先做的是把 `tests/` 下的测试脚本整理成"输入文件 + 期望输出文件"的对比测试，每次改动后一键跑完，防止加新功能时把原来的行为改坏了。
