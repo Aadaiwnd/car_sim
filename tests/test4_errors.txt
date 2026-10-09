@@ -1,0 +1,25 @@
+forward 60
+start
+start
+auto forward
+auto forward 101
+auto forward -5
+auto fly 30
+auto forward 60 99
+auto stop extra
+status
+manual release
+auto
+step
+auto forward 60
+step
+step
+step
+auto backward 40
+step
+step
+step
+step
+status
+manual
+quit

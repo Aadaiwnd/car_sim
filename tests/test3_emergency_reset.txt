@@ -1,0 +1,17 @@
+status
+start
+auto forward 100
+step
+step
+emergency
+status
+auto forward 40
+step
+reset
+status
+auto forward 50
+start
+auto forward 50
+step
+status
+quit

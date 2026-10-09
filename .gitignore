@@ -1,0 +1,10 @@
+# build artifacts
+*.obj
+*.o
+*.exe
+car
+
+# editor files
+*.swp
+.vscode/
+.idea/

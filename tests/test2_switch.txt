@@ -1,0 +1,13 @@
+start
+auto forward 60
+manual left 30
+auto backward 80
+manual release
+status
+auto stop
+status
+manual stop
+status
+manual release
+status
+quit

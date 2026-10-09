@@ -1,0 +1,7 @@
+start
+auto forward 60
+step
+manual left 30
+step
+status
+quit
